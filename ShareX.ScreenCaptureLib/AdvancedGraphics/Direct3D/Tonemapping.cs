@@ -13,6 +13,66 @@ namespace ShareX.ScreenCaptureLib.AdvancedGraphics.Direct3D;
 public class Tonemapping
 {
 // TODO: as this code is from SKIV project it probably can be simplifed a lot more, as we dont need many of the features
+
+    /// <summary>
+    /// Returns true if the DXGI duplication rotation is non-identity
+    /// (i.e. the frame texture is in native panel orientation and needs rotation).
+    /// </summary>
+    public static bool IsRotated(ModeRotation rotation) =>
+        rotation != ModeRotation.Identity && rotation != ModeRotation.Unspecified;
+
+    /// <summary>
+    /// Computes the six quad-vertex UV pairs that correctly sample from a
+    /// native-orientation texture, given a GDI-space source rectangle and
+    /// the DXGI rotation.
+    ///
+    /// <paramref name="srcBox"/> is in GDI pixels relative to the monitor.
+    /// <paramref name="monitorGdiWidth"/> / <paramref name="monitorGdiHeight"/> are
+    /// the monitor's desktop (rotated) dimensions.
+    /// </summary>
+    internal static Vertex[] BuildRotatedQuad(
+        Box srcBox,
+        int monitorGdiWidth, int monitorGdiHeight,
+        ModeRotation rotation)
+    {
+        // Normalise srcBox into [0..1] desktop UV space
+        float du0 = srcBox.Left   / (float)monitorGdiWidth;
+        float dv0 = srcBox.Top    / (float)monitorGdiHeight;
+        float du1 = (srcBox.Left + srcBox.Width)  / (float)monitorGdiWidth;
+        float dv1 = (srcBox.Top  + srcBox.Height) / (float)monitorGdiHeight;
+
+        // Map each quad corner from desktop-UV to texture-UV based on rotation.
+        // Desktop UV (du, dv) -> Texture UV (tu, tv):
+        //   Identity:   tu = du,       tv = dv
+        //   Rotate90:   tu = dv,       tv = 1 - du   (panel rotated 90° CW)
+        //   Rotate180:  tu = 1 - du,   tv = 1 - dv
+        //   Rotate270:  tu = 1 - dv,   tv = du       (panel rotated 90° CCW)
+        Vector2 MapUV(float du, float dv) => rotation switch
+        {
+            ModeRotation.Rotate90  => new Vector2(dv,     1f - du),
+            ModeRotation.Rotate180 => new Vector2(1f - du, 1f - dv),
+            ModeRotation.Rotate270 => new Vector2(1f - dv, du),
+            _                      => new Vector2(du,      dv),
+        };
+
+        // Quad corners: top-left, top-right, bottom-left, bottom-right
+        Vector2 tlUV = MapUV(du0, dv0);
+        Vector2 trUV = MapUV(du1, dv0);
+        Vector2 blUV = MapUV(du0, dv1);
+        Vector2 brUV = MapUV(du1, dv1);
+
+        const float L = -1f, R = 1f, T = 1f, B = -1f;
+        return
+        [
+            new Vertex(new Vector2(L, T), tlUV),
+            new Vertex(new Vector2(R, T), trUV),
+            new Vertex(new Vector2(L, B), blUV),
+            new Vertex(new Vector2(L, B), blUV),
+            new Vertex(new Vector2(R, T), trUV),
+            new Vertex(new Vector2(R, B), brUV),
+        ];
+    }
+
     public static ID3D11Texture2D TonemapOnCpu(HdrSettings hdrSettings, ModernCaptureMonitorDescription region, DeviceAccess deviceAccess,
         ID3D11Texture2D inputHdrTex)
     {
@@ -31,34 +91,42 @@ public class Tonemapping
 
     public static ID3D11Texture2D TonemapOnGpu(HdrSettings hdrSettings, ModernCaptureMonitorDescription region, DeviceAccess deviceAccess,
         ID3D11Texture2D cpuStaging, ID3D11Texture2D gpuRawTexture, ID3D11Texture2D canvasGpu,     Box                                  destBox,
-        Box                                  srcBox)
+        Box                                  srcBox,
+        ModeRotation rotation = ModeRotation.Identity)
     {
         ID3D11Device device = deviceAccess.Device;
         ID3D11DeviceContext ctx = device.ImmediateContext;
         ImageInfo imageInfo = CalculateImageInfo(hdrSettings, cpuStaging);
         ShaderConstantHelper.GetShaderConstants(region.MonitorInfo, hdrSettings, imageInfo, out var vertexShaderConstants, out var pixelShaderConstants);
-        // var quadVerts = defaultVerts; // Direct3DUtils.ConstructForScreen(region);
 
         var rawDesc = gpuRawTexture.Description;
-        float u0 = srcBox.Left   / (float)rawDesc.Width;
-        float v0 = srcBox.Top    / (float)rawDesc.Height;
-        float u1 = u0 + (srcBox.Width / (float)rawDesc.Width);
-        float v1 = v0 + (srcBox.Height / (float)rawDesc.Height);
-
-        float left = -1.0f;
-        float right = 1.0f;
-        float bottom = -1.0f;
-        float top = 1.0f;
-        var quadVerts = new[]
+        Vertex[] quadVerts;
+        if (IsRotated(rotation))
         {
-            new Vertex(new Vector2(left, top),  new Vector2(u0, v0)),
-            new Vertex(new Vector2(right, top),  new Vector2(u1, v0)),
-            new Vertex(new Vector2(left, bottom),  new Vector2(u0, v1)),
-            new Vertex(new Vector2(left, bottom),  new Vector2(u0, v1)),
-            new Vertex(new Vector2(right, top),  new Vector2(u1, v0)),
-            new Vertex(new Vector2(right, bottom),  new Vector2(u1, v1)),
-        };
+            quadVerts = BuildRotatedQuad(
+                srcBox,
+                region.MonitorInfo.MonitorArea.Width,
+                region.MonitorInfo.MonitorArea.Height,
+                rotation);
+        }
+        else
+        {
+            float u0 = srcBox.Left   / (float)rawDesc.Width;
+            float v0 = srcBox.Top    / (float)rawDesc.Height;
+            float u1 = u0 + (srcBox.Width / (float)rawDesc.Width);
+            float v1 = v0 + (srcBox.Height / (float)rawDesc.Height);
 
+            const float left = -1.0f, right = 1.0f, bottom = -1.0f, top = 1.0f;
+            quadVerts = new[]
+            {
+                new Vertex(new Vector2(left, top),  new Vector2(u0, v0)),
+                new Vertex(new Vector2(right, top),  new Vector2(u1, v0)),
+                new Vertex(new Vector2(left, bottom),  new Vector2(u0, v1)),
+                new Vertex(new Vector2(left, bottom),  new Vector2(u0, v1)),
+                new Vertex(new Vector2(right, top),  new Vector2(u1, v0)),
+                new Vertex(new Vector2(right, bottom),  new Vector2(u1, v1)),
+            };
+        }
 
         var vertexBuffer = device.CreateBuffer(quadVerts, BindFlags.VertexBuffer);
 
@@ -129,6 +197,106 @@ public class Tonemapping
 
 
         return canvasGpu;
+    }
+
+    /// <summary>
+    /// Renders an SDR (B8G8R8A8_UNorm) frame texture into the canvas using a
+    /// passthrough pixel shader, applying rotation-aware UV coordinates.
+    /// Used for rotated SDR monitors where CopySubresourceRegion cannot rotate.
+    /// </summary>
+    public static void RenderPassthrough(
+        DeviceAccess deviceAccess,
+        ID3D11Texture2D gpuFrameTexture,
+        ID3D11Texture2D canvasGpu,
+        Box destBox,
+        Box srcBox,
+        int monitorGdiWidth,
+        int monitorGdiHeight,
+        ModeRotation rotation)
+    {
+        ID3D11Device device = deviceAccess.Device;
+        ID3D11DeviceContext ctx = device.ImmediateContext;
+
+        var rawDesc = gpuFrameTexture.Description;
+        Vertex[] quadVerts = BuildRotatedQuad(
+            srcBox,
+            monitorGdiWidth, monitorGdiHeight,
+            rotation);
+
+        var vertexBuffer = device.CreateBuffer(quadVerts, BindFlags.VertexBuffer);
+
+        var pixelShaderConstants = new PixelShaderConstants
+        {
+            TonemapType = (uint)HdrToneMapType.Passthrough,
+        };
+        PixelShaderConstants[] pixelShaderConstantsArray = [pixelShaderConstants];
+        var psConstantBuffer = device.CreateBuffer(pixelShaderConstantsArray, BindFlags.ConstantBuffer);
+
+        var vertexShaderConstants = new VertexShaderConstants
+        {
+            LuminanceScale = new Vector4(1, 0, 0, 0),
+        };
+        VertexShaderConstants[] vertexShaderConstantsArray = [vertexShaderConstants];
+        var vsConstantBuffer = device.CreateBuffer(vertexShaderConstantsArray, BindFlags.ConstantBuffer);
+
+        var ldrRtv = device.CreateRenderTargetView(canvasGpu);
+
+        var srvDesc = new ShaderResourceViewDescription
+        {
+            Format = rawDesc.Format,
+            ViewDimension = ShaderResourceViewDimension.Texture2D,
+            Texture2D = new Texture2DShaderResourceView
+            {
+                MostDetailedMip = 0,
+                MipLevels = 1
+            }
+        };
+        var srv = device.CreateShaderResourceView(gpuFrameTexture, srvDesc);
+
+        ctx.OMSetRenderTargets(ldrRtv);
+
+        var vp = new Viewport
+        {
+            X = destBox.Left,
+            Y = destBox.Top,
+            Width = destBox.Width,
+            Height = destBox.Height,
+            MinDepth = 0,
+            MaxDepth = 1
+        };
+        ctx.RSSetViewport(vp);
+
+        ctx.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        ctx.IASetInputLayout(deviceAccess.inputLayout);
+        ctx.IASetVertexBuffer(0, vertexBuffer, Vertex.SizeInBytes);
+
+        var sampler = device.CreateSamplerState(new SamplerDescription()
+        {
+            Filter = Filter.MinMagMipLinear,
+            AddressU = TextureAddressMode.Clamp,
+            AddressV = TextureAddressMode.Clamp,
+            AddressW = TextureAddressMode.Clamp,
+            MipLODBias = 0,
+            ComparisonFunc = ComparisonFunction.Never,
+            MinLOD = 0,
+            MaxLOD = 0
+        });
+        ctx.PSSetSampler(0, sampler);
+
+        ctx.VSSetShader(deviceAccess.vxShader);
+        ctx.VSSetConstantBuffer(0, vsConstantBuffer);
+        ctx.PSSetShader(deviceAccess.pxShader);
+        ctx.PSSetConstantBuffer(0, psConstantBuffer);
+        ctx.PSSetShaderResource(0, srv);
+
+        ctx.Draw(vertexCount: 6, startVertexLocation: 0);
+
+        srv.Dispose();
+        psConstantBuffer.Dispose();
+        vsConstantBuffer.Dispose();
+        vertexBuffer.Dispose();
+        ldrRtv.Dispose();
+        sampler.Dispose();
     }
 
     // heavily inspired by https://github.com/SpecialKO/SKIV/blob/ed2a4a9de93ebba9661f9e8ed31c5d67ab490d2d/src/utility/image.cpp#L1300C1-L1300C25

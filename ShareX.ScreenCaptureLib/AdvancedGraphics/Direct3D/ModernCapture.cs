@@ -76,11 +76,12 @@ public class ModernCapture : IDisposable, DisposableCache
     private readonly Dictionary<IntPtr /*hmon*/, DuplicationState> _duplications = new();
     private readonly Lock _lock = new(); // makes first-time creation threadsafe
 
-    private sealed class DuplicationState(IDXGIOutputDuplication dup, ID3D11Texture2D staging, bool isHdr, ID3D11Device device) : IDisposable, DisposableCache
+    private sealed class DuplicationState(IDXGIOutputDuplication dup, ID3D11Texture2D staging, bool isHdr, ID3D11Device device, ModeRotation rotation) : IDisposable, DisposableCache
     {
         public IDXGIOutputDuplication Dup { get; } = dup;
         public ID3D11Texture2D Staging { get; set; } = staging;
         public bool IsHdr { get; } = isHdr;
+        public ModeRotation Rotation { get; } = rotation;
 
         public ID3D11Device Device = device;
 
@@ -153,8 +154,9 @@ public class ModernCapture : IDisposable, DisposableCache
 
             var desc = dup.Description;
             bool isHdr = desc.ModeDescription.Format == Format.R16G16B16A16_Float;
+            var rotation = desc.Rotation;
 
-            state = new DuplicationState(dup, CreateStagingBuffer(screen.Device, desc), isHdr, screen.Device);
+            state = new DuplicationState(dup, CreateStagingBuffer(screen.Device, desc), isHdr, screen.Device, rotation);
             _duplications[hmon] = state;
             return state;
         }
@@ -319,18 +321,35 @@ public class ModernCapture : IDisposable, DisposableCache
                     Bottom = srcRect.Bottom
                 };
 
+                var rotation = dupState.Rotation;
+                bool isRotated = Tonemapping.IsRotated(rotation);
+
                 if (dupState.IsHdr)
                 {
                     if (!forceCpuTonemap)
                     {
                         // GPU path: convert HDR staging → B8G8R8A8_UNorm GPU texture
-                        ldrSource = Tonemapping.TonemapOnGpu(Settings, state.Region, state.DeviceAccess, dupState.Staging, frameTex, canvasGpu, destBox, srcBox);
+                        ldrSource = Tonemapping.TonemapOnGpu(Settings, state.Region, state.DeviceAccess, dupState.Staging, frameTex, canvasGpu, destBox, srcBox, rotation);
                     }
                     else
                     {
                         // CPU path: convert HDR staging → B8G8R8A8_UNorm STAGING
                         ldrSource = Tonemapping.TonemapOnCpu(Settings, state.Region, state.DeviceAccess, frameTex);
                     }
+                }
+                else if (isRotated)
+                {
+                    // SDR + rotated: CopySubresourceRegion can't rotate, so use
+                    // a shader-based passthrough render with rotation-aware UVs.
+                    Tonemapping.RenderPassthrough(
+                        state.DeviceAccess,
+                        frameTex,
+                        canvasGpu,
+                        destBox,
+                        srcBox,
+                        r.MonitorInfo.MonitorArea.Width,
+                        r.MonitorInfo.MonitorArea.Height,
+                        rotation);
                 }
                 else
                 {

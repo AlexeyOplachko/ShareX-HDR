@@ -25,6 +25,7 @@ static const uint SKIV_TONEMAP_TYPE_CLIP               = 0x1;
 static const uint SKIV_TONEMAP_TYPE_INFINITE_ROLLOFF   = 0x2;
 static const uint SKIV_TONEMAP_TYPE_NORMALIZE_TO_CLL   = 0x4;
 static const uint SKIV_TONEMAP_TYPE_MAP_CLL_TO_DISPLAY = 0x8;
+static const uint SKIV_TONEMAP_TYPE_PASSTHROUGH        = 0x10;
 
 float TonemapNone (float L)
 {

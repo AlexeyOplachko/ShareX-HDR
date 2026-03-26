@@ -13,5 +13,6 @@ public enum HdrToneMapType
     Clip = 0x1, // Truncate the image before display
     InfiniteRolloff = 0x2, // Reduce to finite range (i.e. x/(1+x))
     NormalizeToCll = 0x4, // Content range mapped to [0,1]
-    MapCllToDisplay = 0x8 // Content range mapped to display range
+    MapCllToDisplay = 0x8, // Content range mapped to display range
+    Passthrough = 0x10 // No processing, just sample and output (used for SDR rotation)
 }

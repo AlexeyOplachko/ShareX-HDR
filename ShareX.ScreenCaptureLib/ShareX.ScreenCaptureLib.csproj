@@ -7,6 +7,9 @@
     <NoWarn>WFO1000</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="ShareX.ScreenCaptureLib.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="BetterWin32Errors" Version="0.2.0" />
     <PackageReference Include="DirectXTexNet" Version="1.0.7" />
     <PackageReference Include="ImageListView" Version="13.8.2" />

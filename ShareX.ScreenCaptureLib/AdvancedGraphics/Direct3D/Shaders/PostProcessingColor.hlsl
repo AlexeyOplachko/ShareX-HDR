@@ -47,6 +47,11 @@ Texture2D texture0 : register (t0);
 
 float4 main(PS_INPUT input) : SV_Target
 {
+    if (tonemap_type == SKIV_TONEMAP_TYPE_PASSTHROUGH)
+    {
+        return texture0.Sample(sampler0, input.uv);
+    }
+
     float4 input_col = (1.0f).xxxx;
 
 
